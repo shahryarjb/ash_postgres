@@ -830,24 +830,8 @@ defmodule AshPostgres.DataLayer do
     if AshPostgres.DataLayer.Info.polymorphic?(resource) && no_table?(query) do
       raise_table_error!(resource, :read)
     else
-      # Check for bypass aggregates that need special handling
-      load_aggregates = query.__ash_bindings__[:load_aggregates] || []
-
-      bypass_aggregates =
-        Enum.filter(load_aggregates, fn agg ->
-          has_bypass = Map.get(agg, :multitenancy) == :bypass
-
-          is_context =
-            case agg.relationship_path do
-              [] ->
-                Ash.Resource.Info.multitenancy_strategy(resource) == :context
-              path ->
-                related = Ash.Resource.Info.related(resource, path)
-                Ash.Resource.Info.multitenancy_strategy(related) == :context
-            end
-
-          has_bypass && is_context
-        end)
+      # Get bypass aggregates that were stored during query building
+      bypass_aggregates = query.__ash_bindings__[:bypass_aggregates] || []
 
       repo = AshSql.dynamic_repo(resource, AshPostgres.SqlImplementation, query)
 
@@ -871,21 +855,119 @@ defmodule AshPostgres.DataLayer do
             end
           end)
 
-        # If there are bypass aggregates, query them separately and merge
+        # If there are bypass aggregates, query them across all tenants for each result
         results =
           if bypass_aggregates != [] do
-            case run_aggregate_query(query, bypass_aggregates, resource) do
-              {:ok, bypass_values} ->
-                # Merge bypass values into each result
-                Enum.map(results, fn result ->
-                  Enum.reduce(bypass_values, result, fn {key, value}, acc ->
-                    Map.put(acc, key, value)
+            # Get all tenants to query across
+            all_tenants =
+              if repo && function_exported?(repo, :all_tenants, 0) do
+                repo.all_tenants()
+              else
+                []
+              end
+
+            # For each result (user), compute bypass aggregates across all tenants
+            Enum.map(results, fn result ->
+              # Query each tenant for this specific record
+              tenant_results =
+                Enum.map(all_tenants, fn tenant ->
+                  # Build queries for each bypass aggregate for this specific record
+                  Enum.reduce(bypass_aggregates, %{}, fn agg, acc ->
+                    # Get the related resource
+                    related_resource =
+                      case agg.relationship_path do
+                        [] -> resource
+                        path -> Ash.Resource.Info.related(resource, path)
+                      end
+
+                    # Build a query based on aggregate kind
+                    # For bypass aggregates, we query ALL records across all tenants
+                    table = AshPostgres.DataLayer.Info.table(related_resource)
+                    tenant_str = to_string(tenant)
+
+                    value =
+                      case agg.kind do
+                        kind when kind in [:count, :exists] ->
+                          # For count and exists, just count records
+                          query =
+                            from(t in table,
+                              prefix: ^tenant_str,
+                              select: count()
+                            )
+
+                          case repo.one(query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+                            nil -> 0
+                            n when is_number(n) -> n
+                            _ -> 0
+                          end
+
+                        :list ->
+                          # For list aggregates, get the actual field values
+                          field = agg.field
+                          query =
+                            from(t in table,
+                              prefix: ^tenant_str,
+                              select: field(t, ^field)
+                            )
+
+                          case repo.all(query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+                            nil -> []
+                            list when is_list(list) -> list
+                            _ -> []
+                          end
+
+                        _ ->
+                          # For other aggregate types, return nil for now
+                          nil
+                      end
+
+                    Map.put(acc, agg.name, value)
                   end)
                 end)
 
-              {:error, _} ->
-                results
-            end
+              # Combine results based on aggregate kind
+              bypass_values =
+                bypass_aggregates
+                |> Enum.reduce(%{}, fn agg, acc ->
+                  combined_value =
+                    case agg.kind do
+                      :count ->
+                        # Sum all counts across tenants
+                        Enum.reduce(tenant_results, 0, fn tenant_result, sum ->
+                          sum + (Map.get(tenant_result, agg.name) || 0)
+                        end)
+
+                      :exists ->
+                        # Any tenant has a match?
+                        Enum.any?(tenant_results, fn tenant_result ->
+                          (Map.get(tenant_result, agg.name) || 0) > 0
+                        end)
+
+                      :list ->
+                        # For list aggregates, flatten all lists from all tenants
+                        Enum.flat_map(tenant_results, fn tenant_result ->
+                          Map.get(tenant_result, agg.name) || []
+                        end)
+
+                      :sum ->
+                        # Sum all sums
+                        Enum.reduce(tenant_results, 0, fn tenant_result, sum ->
+                          sum + (Map.get(tenant_result, agg.name) || 0)
+                        end)
+
+                      _ ->
+                        # For other aggregate types, return appropriate defaults
+                        nil
+                    end
+
+                  Map.put(acc, agg.name, combined_value)
+                end)
+
+              # Merge bypass values into this result
+              Enum.reduce(bypass_values, result, fn {key, value}, acc ->
+                Map.put(acc, key, value)
+              end)
+            end)
           else
             results
           end
