@@ -1019,52 +1019,204 @@ defmodule AshPostgres.DataLayer do
 
   @impl true
   def run_aggregate_query(original_query, aggregates, resource) do
+    # Check if we have bypass aggregates with context multitenancy
+    {bypass_aggregates, normal_aggregates} =
+      Enum.split_with(aggregates, fn agg ->
+        Map.get(agg, :multitenancy) == :bypass &&
+          Ash.Resource.Info.multitenancy_strategy(resource) == :context
+      end)
+
+    # Handle normal aggregates through ash_sql
+    normal_result =
+      if Enum.empty?(normal_aggregates) do
+        {:ok, %{}}
+      else
+        AshSql.AggregateQuery.run_aggregate_query(
+          original_query,
+          normal_aggregates,
+          resource,
+          AshPostgres.SqlImplementation
+        )
+      end
+
+    # Handle bypass aggregates separately
+    bypass_result =
+      if Enum.empty?(bypass_aggregates) do
+        {:ok, %{}}
+      else
+        run_bypass_aggregate_query(original_query, bypass_aggregates, resource)
+      end
+
+    # Combine results
+    with {:ok, normal_data} <- normal_result,
+         {:ok, bypass_data} <- bypass_result do
+      {:ok, Map.merge(normal_data, bypass_data)}
+    end
+  end
+
+  defp run_bypass_aggregate_query(original_query, aggregates, resource) do
+    repo = AshSql.dynamic_repo(resource, AshPostgres.SqlImplementation, original_query)
+
+    # Get all tenants to query across
+    all_tenants =
+      if repo && function_exported?(repo, :all_tenants, 0) do
+        repo.all_tenants()
+      else
+        []
+      end
+
+    # Build results for each aggregate
     result =
-      AshSql.AggregateQuery.run_aggregate_query(
-        original_query,
-        aggregates,
-        resource,
-        AshPostgres.SqlImplementation
-      )
+      Enum.reduce(aggregates, %{}, fn agg, acc ->
+        # Get the related resource
+        related_resource =
+          case agg.relationship_path do
+            [] -> resource
+            path -> Ash.Resource.Info.related(resource, path)
+          end
 
-    # Post-process bypass aggregates for context multitenancy
-    # Convert Decimal to integer for count aggregates
-    case result do
-      {:ok, data} ->
-        adjusted_data =
-          Enum.reduce(aggregates, data, fn agg, acc ->
-            has_bypass = Map.get(agg, :multitenancy) == :bypass
-            is_context = Ash.Resource.Info.multitenancy_strategy(resource) == :context
+        # Compute the bypass aggregate value
+        value = compute_bypass_aggregate(agg, related_resource, all_tenants, repo, original_query)
+        Map.put(acc, agg.name, value)
+      end)
 
-            if has_bypass && is_context do
-              current_value = Map.get(acc, agg.name)
+    {:ok, result}
+  end
 
-              new_value =
-                case agg.kind do
-                  :count ->
-                    if is_struct(current_value, Decimal) do
-                      Decimal.to_integer(current_value)
-                    else
-                      current_value
-                    end
-                  _ ->
-                    current_value
-                end
+  defp compute_bypass_aggregate(agg, related_resource, all_tenants, repo, _original_query) do
+    table = AshPostgres.DataLayer.Info.table(related_resource)
 
-              if new_value != current_value do
-                Map.put(acc, agg.name, new_value)
-              else
-                acc
-              end
-            else
-              acc
+    case agg.kind do
+      :count ->
+        # Build Ecto queries for each tenant and combine with UNION ALL
+        case all_tenants do
+          [] ->
+            0
+
+          [single_tenant] ->
+            # Optimize for single tenant case
+            query = from(t in table, prefix: ^single_tenant, select: count())
+
+            case repo.one(query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+              nil -> 0
+              count when is_integer(count) -> count
+              %Decimal{} = count -> Decimal.to_integer(count)
+              _ -> 0
             end
-          end)
 
-        {:ok, adjusted_data}
+          tenants ->
+            # Multiple tenants: build union query
+            # Use select_merge with a map so the subquery is valid
+            [first_tenant | rest_tenants] = tenants
 
-      error ->
-        error
+            base_query = from(t in table, prefix: ^first_tenant, select: %{count: count()})
+
+            union_query =
+              Enum.reduce(rest_tenants, base_query, fn tenant, acc ->
+                tenant_query = from(t in table, prefix: ^tenant, select: %{count: count()})
+                Ecto.Query.union_all(acc, ^tenant_query)
+              end)
+
+            # Sum the counts from all tenants
+            final_query = from(t in subquery(union_query), select: sum(t.count))
+
+            case repo.one(final_query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+              nil -> 0
+              count when is_integer(count) -> count
+              %Decimal{} = count -> Decimal.to_integer(count)
+              _ -> 0
+            end
+        end
+
+      :exists ->
+        # Check if any tenant has matching records
+        Enum.any?(all_tenants, fn tenant ->
+          query = from(t in table, prefix: ^tenant, limit: 1)
+
+          case repo.one(query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+            nil -> false
+            _ -> true
+          end
+        end)
+
+      :list ->
+        # Combine lists from all tenants using UNION ALL
+        field = agg.field
+
+        case all_tenants do
+          [] ->
+            []
+
+          [single_tenant] ->
+            query = from(t in table, prefix: ^single_tenant, select: field(t, ^field))
+
+            case repo.all(query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+              nil -> []
+              list when is_list(list) -> list
+              _ -> []
+            end
+
+          tenants ->
+            [first_tenant | rest_tenants] = tenants
+
+            base_query = from(t in table, prefix: ^first_tenant, select: field(t, ^field))
+
+            union_query =
+              Enum.reduce(rest_tenants, base_query, fn tenant, acc ->
+                tenant_query = from(t in table, prefix: ^tenant, select: field(t, ^field))
+                Ecto.Query.union_all(acc, ^tenant_query)
+              end)
+
+            case repo.all(union_query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+              nil -> []
+              list when is_list(list) -> list
+              _ -> []
+            end
+        end
+
+      :sum ->
+        # Sum values across all tenants
+        field = agg.field
+
+        case all_tenants do
+          [] ->
+            0
+
+          [single_tenant] ->
+            query = from(t in table, prefix: ^single_tenant, select: sum(field(t, ^field)))
+
+            case repo.one(query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+              nil -> 0
+              sum when is_number(sum) -> sum
+              %Decimal{} = sum -> Decimal.to_float(sum)
+              _ -> 0
+            end
+
+          tenants ->
+            [first_tenant | rest_tenants] = tenants
+
+            base_query = from(t in table, prefix: ^first_tenant, select: %{sum: sum(field(t, ^field))})
+
+            union_query =
+              Enum.reduce(rest_tenants, base_query, fn tenant, acc ->
+                tenant_query = from(t in table, prefix: ^tenant, select: %{sum: sum(field(t, ^field))})
+                Ecto.Query.union_all(acc, ^tenant_query)
+              end)
+
+            # Sum the sums from all tenants
+            final_query = from(t in subquery(union_query), select: sum(t.sum))
+
+            case repo.one(final_query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+              nil -> 0
+              sum when is_number(sum) -> sum
+              %Decimal{} = sum -> Decimal.to_float(sum)
+              _ -> 0
+            end
+        end
+
+      _ ->
+        # For other aggregate types, return nil
+        nil
     end
   end
 
