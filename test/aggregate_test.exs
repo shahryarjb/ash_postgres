@@ -191,53 +191,34 @@ defmodule AshSql.AggregateTest do
 
     test "aggregates with bypass can count across all tenants in context multitenancy" do
       # Create two separate orgs (tenants)
-      org1 =
-        Org
-        |> Ash.Changeset.for_create(:create, %{name: "Org1"})
-        |> Ash.create!()
-
-      org2 =
-        Org
-        |> Ash.Changeset.for_create(:create, %{name: "Org2"})
-        |> Ash.create!()
+      [org1, org2] =
+        for i <- 1..2 do
+          Org
+          |> Ash.Changeset.for_create(:create, %{name: "Org#{i}"})
+          |> Ash.create!()
+        end
 
       # Create users in each org (attribute multitenancy)
-      user1 =
-        User
-        |> Ash.Changeset.for_create(:create, %{name: "User1", org_id: org1.id})
-        |> Ash.create!()
-
-      user2 =
-        User
-        |> Ash.Changeset.for_create(:create, %{name: "User2", org_id: org2.id})
-        |> Ash.create!()
+      [user1, user2] =
+        for {org, i} <- Enum.with_index([org1, org2], 1) do
+          User
+          |> Ash.Changeset.for_create(:create, %{name: "User#{i}", org_id: org.id})
+          |> Ash.create!()
+        end
 
       # Create posts in org1 schema (context multitenancy)
-      post1_org1 =
+      for i <- 1..2 do
         Post
-        |> Ash.Changeset.for_create(:create, %{name: "Post 1 in Org1", user_id: user1.id})
+        |> Ash.Changeset.for_create(:create, %{name: "Post #{i} in Org1", user_id: user1.id})
         |> Ash.create!(tenant: "org_#{org1.id}")
-
-      post2_org1 =
-        Post
-        |> Ash.Changeset.for_create(:create, %{name: "Post 2 in Org1", user_id: user1.id})
-        |> Ash.create!(tenant: "org_#{org1.id}")
+      end
 
       # Create posts in org2 schema (context multitenancy)
-      post1_org2 =
+      for i <- 1..3 do
         Post
-        |> Ash.Changeset.for_create(:create, %{name: "Post 1 in Org2", user_id: user2.id})
+        |> Ash.Changeset.for_create(:create, %{name: "Post #{i} in Org2", user_id: user2.id})
         |> Ash.create!(tenant: "org_#{org2.id}")
-
-      post2_org2 =
-        Post
-        |> Ash.Changeset.for_create(:create, %{name: "Post 2 in Org2", user_id: user2.id})
-        |> Ash.create!(tenant: "org_#{org2.id}")
-
-      post3_org2 =
-        Post
-        |> Ash.Changeset.for_create(:create, %{name: "Post 3 in Org2", user_id: user2.id})
-        |> Ash.create!(tenant: "org_#{org2.id}")
+      end
 
       # Test: Load user1 with bypass aggregates from org1 context
       loaded_user1 =
