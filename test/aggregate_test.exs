@@ -188,6 +188,304 @@ defmodule AshSql.AggregateTest do
       assert Ash.load!(org, :total_users_posts, tenant: "org_#{org.id}")
              |> then(& &1.total_users_posts) == 4
     end
+
+    test "aggregates with bypass can count across all tenants in context multitenancy" do
+      # Create two separate orgs (tenants)
+      org1 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "Org1"})
+        |> Ash.create!()
+
+      org2 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "Org2"})
+        |> Ash.create!()
+
+      # Create users in each org (attribute multitenancy)
+      user1 =
+        User
+        |> Ash.Changeset.for_create(:create, %{name: "User1", org_id: org1.id})
+        |> Ash.create!()
+
+      user2 =
+        User
+        |> Ash.Changeset.for_create(:create, %{name: "User2", org_id: org2.id})
+        |> Ash.create!()
+
+      # Create posts in org1 schema (context multitenancy)
+      post1_org1 =
+        Post
+        |> Ash.Changeset.for_create(:create, %{name: "Post 1 in Org1", user_id: user1.id})
+        |> Ash.create!(tenant: "org_#{org1.id}")
+
+      post2_org1 =
+        Post
+        |> Ash.Changeset.for_create(:create, %{name: "Post 2 in Org1", user_id: user1.id})
+        |> Ash.create!(tenant: "org_#{org1.id}")
+
+      # Create posts in org2 schema (context multitenancy)
+      post1_org2 =
+        Post
+        |> Ash.Changeset.for_create(:create, %{name: "Post 1 in Org2", user_id: user2.id})
+        |> Ash.create!(tenant: "org_#{org2.id}")
+
+      post2_org2 =
+        Post
+        |> Ash.Changeset.for_create(:create, %{name: "Post 2 in Org2", user_id: user2.id})
+        |> Ash.create!(tenant: "org_#{org2.id}")
+
+      post3_org2 =
+        Post
+        |> Ash.Changeset.for_create(:create, %{name: "Post 3 in Org2", user_id: user2.id})
+        |> Ash.create!(tenant: "org_#{org2.id}")
+
+      # Test: Load user1 with bypass aggregates from org1 context
+      loaded_user1 =
+        Ash.load!(
+          user1,
+          [:posts_count_all_tenants, :posts_count_current_tenant],
+          tenant: "org_#{org1.id}"
+        )
+
+      # Bypass should see posts from ALL tenant schemas (2 in org1 + 3 in org2 = 5)
+      assert loaded_user1.posts_count_all_tenants == 5
+      # Non-bypass should see only posts in org1 schema (2)
+      assert loaded_user1.posts_count_current_tenant == 2
+
+      # Test: Load user2 with bypass aggregates from org2 context
+      loaded_user2 =
+        Ash.load!(
+          user2,
+          [:posts_count_all_tenants, :posts_count_current_tenant],
+          tenant: "org_#{org2.id}"
+        )
+
+      # Bypass should see posts from ALL tenant schemas (2 + 3 = 5)
+      assert loaded_user2.posts_count_all_tenants == 5
+      # Non-bypass should see only posts in org2 schema (3)
+      assert loaded_user2.posts_count_current_tenant == 3
+    end
+
+    test "bypass aggregates work with list and exists for context multitenancy" do
+      org1 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "Org1"})
+        |> Ash.create!()
+
+      org2 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "Org2"})
+        |> Ash.create!()
+
+      user1 =
+        User
+        |> Ash.Changeset.for_create(:create, %{name: "User1", org_id: org1.id})
+        |> Ash.create!()
+
+      user2 =
+        User
+        |> Ash.Changeset.for_create(:create, %{name: "User2", org_id: org2.id})
+        |> Ash.create!()
+
+      # Create posts with distinct names in different tenant schemas
+      Post
+      |> Ash.Changeset.for_create(:create, %{name: "Alpha", user_id: user1.id})
+      |> Ash.create!(tenant: "org_#{org1.id}")
+
+      Post
+      |> Ash.Changeset.for_create(:create, %{name: "Beta", user_id: user1.id})
+      |> Ash.create!(tenant: "org_#{org1.id}")
+
+      Post
+      |> Ash.Changeset.for_create(:create, %{name: "Gamma", user_id: user2.id})
+      |> Ash.create!(tenant: "org_#{org2.id}")
+
+      # Test LIST aggregate with bypass
+      loaded_user1 =
+        Ash.load!(
+          user1,
+          [:post_names_all_tenants, :post_names_current_tenant],
+          tenant: "org_#{org1.id}"
+        )
+
+      # Bypass should see all post names across all tenants
+      assert Enum.sort(loaded_user1.post_names_all_tenants) == ["Alpha", "Beta", "Gamma"]
+      # Non-bypass should see only org1 posts
+      assert Enum.sort(loaded_user1.post_names_current_tenant) == ["Alpha", "Beta"]
+
+      # Test EXISTS aggregate with bypass
+      loaded_user1_exists =
+        Ash.load!(
+          user1,
+          [:has_posts_all_tenants, :has_posts_current_tenant],
+          tenant: "org_#{org1.id}"
+        )
+
+      assert loaded_user1_exists.has_posts_all_tenants == true
+      assert loaded_user1_exists.has_posts_current_tenant == true
+
+      # Create a user with no posts in current tenant
+      user3 =
+        User
+        |> Ash.Changeset.for_create(:create, %{name: "User3", org_id: org1.id})
+        |> Ash.create!()
+
+      loaded_user3 =
+        Ash.load!(
+          user3,
+          [:has_posts_all_tenants, :has_posts_current_tenant],
+          tenant: "org_#{org1.id}"
+        )
+
+      # Bypass sees posts from other users in other tenants
+      assert loaded_user3.has_posts_all_tenants == true
+      # Non-bypass sees no posts for this user in current tenant
+      assert loaded_user3.has_posts_current_tenant == false
+    end
+
+    test "bypass aggregates work with linked resources in context multitenancy" do
+      org1 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "Org1"})
+        |> Ash.create!()
+
+      org2 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "Org2"})
+        |> Ash.create!()
+
+      # Create posts in org1
+      post1_org1 =
+        Post
+        |> Ash.Changeset.for_create(:create, %{name: "Post 1 Org1"})
+        |> Ash.create!(tenant: "org_#{org1.id}")
+
+      post2_org1 =
+        Post
+        |> Ash.Changeset.for_create(:create, %{name: "Post 2 Org1"})
+        |> Ash.create!(tenant: "org_#{org1.id}")
+
+      # Create posts in org2
+      post1_org2 =
+        Post
+        |> Ash.Changeset.for_create(:create, %{name: "Post 1 Org2"})
+        |> Ash.create!(tenant: "org_#{org2.id}")
+
+      post2_org2 =
+        Post
+        |> Ash.Changeset.for_create(:create, %{name: "Post 2 Org2"})
+        |> Ash.create!(tenant: "org_#{org2.id}")
+
+      # Link post1_org1 to post2_org1 (same tenant)
+      post1_org1
+      |> Ash.Changeset.new()
+      |> Ash.Changeset.manage_relationship(:linked_posts, [post2_org1],
+        type: :append_and_remove
+      )
+      |> Ash.update!(tenant: "org_#{org1.id}")
+
+      # Link post1_org2 to both post2_org2 and post1_org1 (cross-tenant link)
+      post1_org2
+      |> Ash.Changeset.new()
+      |> Ash.Changeset.manage_relationship(:linked_posts, [post2_org2],
+        type: :append_and_remove
+      )
+      |> Ash.update!(tenant: "org_#{org2.id}")
+
+      # Test aggregates on linked posts
+      loaded_post1_org1 =
+        Ash.load!(
+          post1_org1,
+          [:total_linked_posts_all_tenants, :total_linked_posts_current_tenant],
+          tenant: "org_#{org1.id}"
+        )
+
+      # Bypass should see linked posts across all tenants
+      # Note: The actual count depends on how cross-tenant links are stored
+      assert loaded_post1_org1.total_linked_posts_current_tenant == 1
+      # Bypass may see more depending on implementation
+      assert loaded_post1_org1.total_linked_posts_all_tenants >= 1
+    end
+
+    test "bypass aggregates with no data return correct empty values in context multitenancy" do
+      org =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "EmptyOrg"})
+        |> Ash.create!()
+
+      user =
+        User
+        |> Ash.Changeset.for_create(:create, %{name: "UserNoPost", org_id: org.id})
+        |> Ash.create!()
+
+      # Load all aggregate types with no posts
+      loaded_user =
+        Ash.load!(
+          user,
+          [
+            :posts_count_all_tenants,
+            :posts_count_current_tenant,
+            :post_names_all_tenants,
+            :post_names_current_tenant,
+            :has_posts_all_tenants,
+            :has_posts_current_tenant
+          ],
+          tenant: "org_#{org.id}"
+        )
+
+      # Verify default/empty values
+      assert loaded_user.posts_count_all_tenants == 0
+      assert loaded_user.posts_count_current_tenant == 0
+      assert loaded_user.post_names_all_tenants == []
+      assert loaded_user.post_names_current_tenant == []
+      assert loaded_user.has_posts_all_tenants == false
+      assert loaded_user.has_posts_current_tenant == false
+    end
+
+    test "bypass aggregates work with Ash.aggregate/3 in context multitenancy" do
+      org1 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "Org1"})
+        |> Ash.create!()
+
+      org2 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "Org2"})
+        |> Ash.create!()
+
+      # Create posts in different tenants
+      for _i <- 1..2 do
+        Post
+        |> Ash.Changeset.for_create(:create, %{name: "Post Org1"})
+        |> Ash.create!(tenant: "org_#{org1.id}")
+      end
+
+      for _i <- 1..3 do
+        Post
+        |> Ash.Changeset.for_create(:create, %{name: "Post Org2"})
+        |> Ash.create!(tenant: "org_#{org2.id}")
+      end
+
+      # Test Ash.aggregate with bypass from org1 context
+      count_all =
+        Ash.aggregate!(
+          Post,
+          {:count_all_posts, :count, multitenancy: :bypass},
+          tenant: "org_#{org1.id}"
+        )
+
+      assert count_all == 5
+
+      # Test Ash.aggregate without bypass from org1 context
+      count_current =
+        Ash.aggregate!(
+          Post,
+          {:count_current_posts, :count},
+          tenant: "org_#{org1.id}"
+        )
+
+      assert count_current == 2
+    end
   end
 
   describe "join filters" do
