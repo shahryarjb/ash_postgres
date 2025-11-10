@@ -180,8 +180,8 @@ defmodule AshPostgres.MixProject do
       # {:ash, ash_version("~> 3.9")},
       {:ash, path: "../ash", override: true},
       {:spark, "~> 2.3 and >= 2.3.4"},
-      # {:ash_sql, ash_sql_version("~> 0.3 and >= 0.3.12")},
-      {:ash_sql, path: "../ash_sql", override: true},
+      {:ash_sql, ash_sql_version("~> 0.3 and >= 0.3.12")},
+      # {:ash_sql, path: "../ash_sql", override: true},
       {:igniter, "~> 0.6 and >= 0.6.29", optional: true},
       {:ecto_sql, "~> 3.13"},
       {:ecto, "~> 3.13"},
@@ -222,24 +222,24 @@ defmodule AshPostgres.MixProject do
   #   end
   # end
 
-  # defp ash_sql_version(default_version) do
-  #   case System.get_env("ASH_SQL_VERSION") do
-  #     nil ->
-  #       default_version
+  defp ash_sql_version(default_version) do
+    case System.get_env("ASH_SQL_VERSION") do
+      nil ->
+        default_version
 
-  #     "local" ->
-  #       [path: "../ash_sql", override: true]
+      "local" ->
+        [path: "../ash_sql", override: true]
 
-  #     "main" ->
-  #       [git: "https://github.com/ash-project/ash_sql.git"]
+      "main" ->
+        [git: "https://github.com/ash-project/ash_sql.git"]
 
-  #     version when is_binary(version) ->
-  #       "~> #{version}"
+      version when is_binary(version) ->
+        "~> #{version}"
 
-  #     version ->
-  #       version
-  #   end
-  # end
+      version ->
+        version
+    end
+  end
 
   defp aliases do
     [
