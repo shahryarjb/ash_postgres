@@ -895,7 +895,16 @@ defmodule AshPostgres.DataLayer do
                               select: count()
                             )
 
-                          case repo.one(query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+                          case repo.one(
+                                 query,
+                                 AshSql.repo_opts(
+                                   repo,
+                                   AshPostgres.SqlImplementation,
+                                   nil,
+                                   nil,
+                                   related_resource
+                                 )
+                               ) do
                             nil -> 0
                             n when is_number(n) -> n
                             _ -> 0
@@ -904,13 +913,23 @@ defmodule AshPostgres.DataLayer do
                         :list ->
                           # For list aggregates, get the actual field values
                           field = agg.field
+
                           query =
                             from(t in table,
                               prefix: ^tenant_str,
                               select: field(t, ^field)
                             )
 
-                          case repo.all(query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+                          case repo.all(
+                                 query,
+                                 AshSql.repo_opts(
+                                   repo,
+                                   AshPostgres.SqlImplementation,
+                                   nil,
+                                   nil,
+                                   related_resource
+                                 )
+                               ) do
                             nil -> []
                             list when is_list(list) -> list
                             _ -> []
@@ -1097,7 +1116,16 @@ defmodule AshPostgres.DataLayer do
             # Optimize for single tenant case
             query = from(t in table, prefix: ^single_tenant, select: count())
 
-            case repo.one(query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+            case repo.one(
+                   query,
+                   AshSql.repo_opts(
+                     repo,
+                     AshPostgres.SqlImplementation,
+                     nil,
+                     nil,
+                     related_resource
+                   )
+                 ) do
               nil -> 0
               count when is_integer(count) -> count
               %Decimal{} = count -> Decimal.to_integer(count)
@@ -1120,7 +1148,16 @@ defmodule AshPostgres.DataLayer do
             # Sum the counts from all tenants
             final_query = from(t in subquery(union_query), select: sum(t.count))
 
-            case repo.one(final_query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+            case repo.one(
+                   final_query,
+                   AshSql.repo_opts(
+                     repo,
+                     AshPostgres.SqlImplementation,
+                     nil,
+                     nil,
+                     related_resource
+                   )
+                 ) do
               nil -> 0
               count when is_integer(count) -> count
               %Decimal{} = count -> Decimal.to_integer(count)
@@ -1133,7 +1170,10 @@ defmodule AshPostgres.DataLayer do
         Enum.any?(all_tenants, fn tenant ->
           query = from(t in table, prefix: ^tenant, limit: 1)
 
-          case repo.one(query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+          case repo.one(
+                 query,
+                 AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)
+               ) do
             nil -> false
             _ -> true
           end
@@ -1150,7 +1190,16 @@ defmodule AshPostgres.DataLayer do
           [single_tenant] ->
             query = from(t in table, prefix: ^single_tenant, select: field(t, ^field))
 
-            case repo.all(query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+            case repo.all(
+                   query,
+                   AshSql.repo_opts(
+                     repo,
+                     AshPostgres.SqlImplementation,
+                     nil,
+                     nil,
+                     related_resource
+                   )
+                 ) do
               nil -> []
               list when is_list(list) -> list
               _ -> []
@@ -1167,7 +1216,16 @@ defmodule AshPostgres.DataLayer do
                 Ecto.Query.union_all(acc, ^tenant_query)
               end)
 
-            case repo.all(union_query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+            case repo.all(
+                   union_query,
+                   AshSql.repo_opts(
+                     repo,
+                     AshPostgres.SqlImplementation,
+                     nil,
+                     nil,
+                     related_resource
+                   )
+                 ) do
               nil -> []
               list when is_list(list) -> list
               _ -> []
@@ -1185,7 +1243,16 @@ defmodule AshPostgres.DataLayer do
           [single_tenant] ->
             query = from(t in table, prefix: ^single_tenant, select: sum(field(t, ^field)))
 
-            case repo.one(query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+            case repo.one(
+                   query,
+                   AshSql.repo_opts(
+                     repo,
+                     AshPostgres.SqlImplementation,
+                     nil,
+                     nil,
+                     related_resource
+                   )
+                 ) do
               nil -> 0
               sum when is_number(sum) -> sum
               %Decimal{} = sum -> Decimal.to_float(sum)
@@ -1195,18 +1262,30 @@ defmodule AshPostgres.DataLayer do
           tenants ->
             [first_tenant | rest_tenants] = tenants
 
-            base_query = from(t in table, prefix: ^first_tenant, select: %{sum: sum(field(t, ^field))})
+            base_query =
+              from(t in table, prefix: ^first_tenant, select: %{sum: sum(field(t, ^field))})
 
             union_query =
               Enum.reduce(rest_tenants, base_query, fn tenant, acc ->
-                tenant_query = from(t in table, prefix: ^tenant, select: %{sum: sum(field(t, ^field))})
+                tenant_query =
+                  from(t in table, prefix: ^tenant, select: %{sum: sum(field(t, ^field))})
+
                 Ecto.Query.union_all(acc, ^tenant_query)
               end)
 
             # Sum the sums from all tenants
             final_query = from(t in subquery(union_query), select: sum(t.sum))
 
-            case repo.one(final_query, AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, related_resource)) do
+            case repo.one(
+                   final_query,
+                   AshSql.repo_opts(
+                     repo,
+                     AshPostgres.SqlImplementation,
+                     nil,
+                     nil,
+                     related_resource
+                   )
+                 ) do
               nil -> 0
               sum when is_number(sum) -> sum
               %Decimal{} = sum -> Decimal.to_float(sum)
@@ -1247,6 +1326,7 @@ defmodule AshPostgres.DataLayer do
           case agg.relationship_path do
             [] ->
               Ash.Resource.Info.multitenancy_strategy(destination_resource) == :context
+
             rel_path ->
               related = Ash.Resource.Info.related(destination_resource, rel_path)
               Ash.Resource.Info.multitenancy_strategy(related) == :context
@@ -3986,11 +4066,36 @@ defmodule AshPostgres.DataLayer do
   end
 
   @impl true
-  def add_aggregates(query, aggregates, _resource) do
-    {:ok,
-     Map.update!(query, :__ash_bindings__, fn bindings ->
-       Map.put(bindings, :load_aggregates, aggregates)
-     end)}
+  def add_aggregates(query, aggregates, resource) do
+    # Separate bypass and normal aggregates (PostgreSQL-specific)
+    {bypass_aggregates, normal_aggregates} =
+      Enum.split_with(aggregates, fn agg ->
+        has_bypass = Map.get(agg, :multitenancy) == :bypass
+
+        is_context =
+          case agg.relationship_path do
+            [] ->
+              Ash.Resource.Info.multitenancy_strategy(resource) == :context
+
+            path ->
+              related = Ash.Resource.Info.related(resource, path)
+              Ash.Resource.Info.multitenancy_strategy(related) == :context
+          end
+
+        has_bypass && is_context
+      end)
+
+    # Store bypass aggregates for post-processing in run_query
+    bindings =
+      if bypass_aggregates != [] do
+        query.__ash_bindings__
+        |> Map.put(:bypass_aggregates, bypass_aggregates)
+        |> Map.put(:load_aggregates, normal_aggregates)
+      else
+        Map.put(query.__ash_bindings__, :load_aggregates, aggregates)
+      end
+
+    {:ok, Map.put(query, :__ash_bindings__, bindings)}
   end
 
   @impl true
