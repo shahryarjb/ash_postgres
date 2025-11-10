@@ -419,9 +419,8 @@ defmodule AshSql.AggregateTest do
       assert loaded_user.posts_count_current_tenant == 0
       assert loaded_user.post_names_all_tenants == []
       assert loaded_user.post_names_current_tenant == []
-      # Note: has_posts_all_tenants returns true due to hardcoded bypass implementation
-      # This is a limitation - proper cross-tenant EXISTS queries are not yet implemented
-      assert loaded_user.has_posts_all_tenants == true
+      # Bypass EXISTS properly returns false when there are no posts across all tenants
+      assert loaded_user.has_posts_all_tenants == false
       assert loaded_user.has_posts_current_tenant == false
     end
 

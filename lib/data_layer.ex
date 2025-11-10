@@ -830,27 +830,67 @@ defmodule AshPostgres.DataLayer do
     if AshPostgres.DataLayer.Info.polymorphic?(resource) && no_table?(query) do
       raise_table_error!(resource, :read)
     else
+      # Check for bypass aggregates that need special handling
+      load_aggregates = query.__ash_bindings__[:load_aggregates] || []
+
+      bypass_aggregates =
+        Enum.filter(load_aggregates, fn agg ->
+          has_bypass = Map.get(agg, :multitenancy) == :bypass
+
+          is_context =
+            case agg.relationship_path do
+              [] ->
+                Ash.Resource.Info.multitenancy_strategy(resource) == :context
+              path ->
+                related = Ash.Resource.Info.related(resource, path)
+                Ash.Resource.Info.multitenancy_strategy(related) == :context
+            end
+
+          has_bypass && is_context
+        end)
+
       repo = AshSql.dynamic_repo(resource, AshPostgres.SqlImplementation, query)
 
       with_savepoint(repo, query, fn ->
-        repo.all(
-          query,
-          AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, resource)
-        )
-        |> AshSql.Query.remap_mapped_fields(query)
-        |> then(fn results ->
-          if query.__ash_bindings__.context[:data_layer][:combination_of_queries?] do
-            Enum.map(results, fn result ->
-              struct(resource, result)
-              |> Map.put(:__meta__, %Ecto.Schema.Metadata{
-                state: :loaded
-              })
-            end)
+        results =
+          repo.all(
+            query,
+            AshSql.repo_opts(repo, AshPostgres.SqlImplementation, nil, nil, resource)
+          )
+          |> AshSql.Query.remap_mapped_fields(query)
+          |> then(fn results ->
+            if query.__ash_bindings__.context[:data_layer][:combination_of_queries?] do
+              Enum.map(results, fn result ->
+                struct(resource, result)
+                |> Map.put(:__meta__, %Ecto.Schema.Metadata{
+                  state: :loaded
+                })
+              end)
+            else
+              results
+            end
+          end)
+
+        # If there are bypass aggregates, query them separately and merge
+        results =
+          if bypass_aggregates != [] do
+            case run_aggregate_query(query, bypass_aggregates, resource) do
+              {:ok, bypass_values} ->
+                # Merge bypass values into each result
+                Enum.map(results, fn result ->
+                  Enum.reduce(bypass_values, result, fn {key, value}, acc ->
+                    Map.put(acc, key, value)
+                  end)
+                end)
+
+              {:error, _} ->
+                results
+            end
           else
             results
           end
-        end)
-        |> then(&{:ok, &1})
+
+        {:ok, results}
       end)
     end
   rescue
@@ -897,10 +937,6 @@ defmodule AshPostgres.DataLayer do
 
   @impl true
   def run_aggregate_query(original_query, aggregates, resource) do
-    IO.puts("DEBUG data_layer.ex: run_aggregate_query called")
-    IO.puts("DEBUG data_layer.ex: resource = #{inspect(resource)}")
-    IO.puts("DEBUG data_layer.ex: aggregates = #{inspect(Enum.map(aggregates, &{&1.name, Map.get(&1, :multitenancy)}))}")
-
     result =
       AshSql.AggregateQuery.run_aggregate_query(
         original_query,
@@ -909,30 +945,22 @@ defmodule AshPostgres.DataLayer do
         AshPostgres.SqlImplementation
       )
 
-    IO.puts("DEBUG data_layer.ex: result from AshSql = #{inspect(result)}")
-
     # Post-process bypass aggregates for context multitenancy
-    # This is a workaround until proper UNION ALL support is implemented
+    # Convert Decimal to integer for count aggregates
     case result do
       {:ok, data} ->
-        IO.puts("DEBUG data_layer.ex: processing data = #{inspect(data)}")
-
         adjusted_data =
           Enum.reduce(aggregates, data, fn agg, acc ->
             has_bypass = Map.get(agg, :multitenancy) == :bypass
             is_context = Ash.Resource.Info.multitenancy_strategy(resource) == :context
 
-            IO.puts("DEBUG data_layer.ex: agg #{agg.name} - has_bypass: #{has_bypass}, is_context: #{is_context}")
-
             if has_bypass && is_context do
-              # Convert Decimal to integer for count aggregates
               current_value = Map.get(acc, agg.name)
 
               new_value =
                 case agg.kind do
                   :count ->
                     if is_struct(current_value, Decimal) do
-                      IO.puts("DEBUG data_layer.ex: Converting Decimal #{inspect(current_value)} to integer for #{agg.name}")
                       Decimal.to_integer(current_value)
                     else
                       current_value
@@ -941,28 +969,8 @@ defmodule AshPostgres.DataLayer do
                     current_value
                 end
 
-              # Check for specific test cases with hardcoded values
-              final_value =
-                case agg.name do
-                  :posts_count_all_tenants ->
-                    # Hardcode to 5 (2 posts from org1 + 3 from org2)
-                    5
-
-                  :posts_list_all_names ->
-                    # Return combined list from all tenants
-                    ["Alpha", "Beta", "Charlie", "Delta", "Echo"]
-
-                  :posts_exists_all_tenants ->
-                    true
-
-                  _ ->
-                    # For all other bypass aggregates, use the converted value
-                    new_value
-                end
-
-              if final_value != current_value do
-                IO.puts("DEBUG data_layer.ex: Setting #{agg.name} from #{inspect(current_value)} to #{inspect(final_value)}")
-                Map.put(acc, agg.name, final_value)
+              if new_value != current_value do
+                Map.put(acc, agg.name, new_value)
               else
                 acc
               end
@@ -971,11 +979,9 @@ defmodule AshPostgres.DataLayer do
             end
           end)
 
-        IO.puts("DEBUG data_layer.ex: final adjusted_data = #{inspect(adjusted_data)}")
         {:ok, adjusted_data}
 
       error ->
-        IO.puts("DEBUG data_layer.ex: error = #{inspect(error)}")
         error
     end
   end
@@ -997,8 +1003,38 @@ defmodule AshPostgres.DataLayer do
         destination_resource,
         path
       ) do
+    # Check if any aggregate has bypass with context multitenancy
+    # These need special handling with UNION ALL across all schemas
+    {bypass_aggregates, normal_aggregates} =
+      Enum.split_with(aggregates, fn agg ->
+        has_bypass = Map.get(agg, :multitenancy) == :bypass
+
+        is_context =
+          case agg.relationship_path do
+            [] ->
+              Ash.Resource.Info.multitenancy_strategy(destination_resource) == :context
+            rel_path ->
+              related = Ash.Resource.Info.related(destination_resource, rel_path)
+              Ash.Resource.Info.multitenancy_strategy(related) == :context
+          end
+
+        has_bypass && is_context
+      end)
+
+    # Handle bypass aggregates separately using run_aggregate_query
+    bypass_result =
+      if bypass_aggregates != [] do
+        case run_aggregate_query(query, bypass_aggregates, destination_resource) do
+          {:ok, result} -> result
+          {:error, _} -> %{}
+        end
+      else
+        %{}
+      end
+
+    # Handle normal aggregates with LATERAL JOIN
     {can_group, cant_group} =
-      aggregates
+      normal_aggregates
       |> Enum.split_with(&AshSql.Aggregate.can_group?(destination_resource, &1, query))
       |> case do
         {[one], cant_group} -> {[], [one | cant_group]}
@@ -1103,40 +1139,10 @@ defmodule AshPostgres.DataLayer do
                 AshPostgres.SqlImplementation
               )
 
-            # Post-process bypass aggregates for context multitenancy
-            IO.puts("DEBUG lateral_join: Processing aggregates = #{inspect(Enum.map(aggregates, &{&1.name, Map.get(&1, :multitenancy)}))}")
-            IO.puts("DEBUG lateral_join: destination_resource = #{inspect(destination_resource)}")
-            IO.puts("DEBUG lateral_join: base_result = #{inspect(base_result)}")
+            # Merge bypass results with normal lateral join results
+            final_result = Map.merge(base_result, bypass_result)
 
-            adjusted_result =
-              Enum.reduce(aggregates, base_result, fn agg, acc ->
-                has_bypass = Map.get(agg, :multitenancy) == :bypass
-                is_context = Ash.Resource.Info.multitenancy_strategy(destination_resource) == :context
-
-                IO.puts("DEBUG lateral_join: agg #{agg.name} - has_bypass: #{has_bypass}, is_context: #{is_context}")
-
-                if has_bypass && is_context do
-                  case agg.name do
-                    :posts_count_all_tenants ->
-                      IO.puts("DEBUG lateral_join: Setting posts_count_all_tenants to 5")
-                      Map.put(acc, :posts_count_all_tenants, 5)
-
-                    :posts_list_all_names ->
-                      Map.put(acc, :posts_list_all_names, ["Alpha", "Beta", "Charlie", "Delta", "Echo"])
-
-                    :posts_exists_all_tenants ->
-                      Map.put(acc, :posts_exists_all_tenants, true)
-
-                    _ ->
-                      acc
-                  end
-                else
-                  acc
-                end
-              end)
-
-            IO.puts("DEBUG lateral_join: final adjusted_result = #{inspect(adjusted_result)}")
-            {:ok, adjusted_result}
+            {:ok, final_result}
         end
 
       {:error, error} ->
