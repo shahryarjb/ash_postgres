@@ -47,6 +47,29 @@ defmodule AshPostgres.MultitenancyTest.User do
   aggregates do
     list(:years_visited, :posts, :last_word)
     count(:count_visited, :posts)
+
+    # Bypass aggregate - counts posts across ALL tenants
+    count :posts_count_all_tenants, :posts do
+      multitenancy(:bypass)
+      public?(true)
+    end
+
+    # Normal aggregate - counts posts in current tenant only
+    count :posts_count_current_tenant, :posts do
+      public?(true)
+    end
+
+    # Bypass aggregate with LIST
+    list :posts_list_all_tenants, :posts, :name do
+      multitenancy(:bypass)
+      public?(true)
+    end
+
+    # Bypass aggregate with EXISTS
+    exists :has_posts_all_tenants, :posts do
+      multitenancy(:bypass)
+      public?(true)
+    end
   end
 
   def parse_tenant("org_" <> id), do: id
