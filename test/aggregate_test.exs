@@ -206,17 +206,17 @@ defmodule AshSql.AggregateTest do
           |> Ash.create!()
         end
 
-      # Create posts in org1 schema (context multitenancy)
+      # Create posts for user1 in org1 schema (context multitenancy)
       for i <- 1..2 do
         Post
         |> Ash.Changeset.for_create(:create, %{name: "Post #{i} in Org1", user_id: user1.id})
         |> Ash.create!(tenant: "org_#{org1.id}")
       end
 
-      # Create posts in org2 schema (context multitenancy)
+      # Create posts for user1 in org2 schema to demonstrate bypass across tenants
       for i <- 1..3 do
         Post
-        |> Ash.Changeset.for_create(:create, %{name: "Post #{i} in Org2", user_id: user2.id})
+        |> Ash.Changeset.for_create(:create, %{name: "Post #{i} in Org2", user_id: user1.id})
         |> Ash.create!(tenant: "org_#{org2.id}")
       end
 
@@ -228,12 +228,12 @@ defmodule AshSql.AggregateTest do
           tenant: "org_#{org1.id}"
         )
 
-      # Bypass should see posts from ALL tenant schemas (2 in org1 + 3 in org2 = 5)
+      # Bypass sees user1's posts from ALL tenant schemas (2 in org1 + 3 in org2 = 5)
       assert loaded_user1.posts_count_all_tenants == 5
-      # Non-bypass should see only posts in org1 schema (2)
+      # Non-bypass sees only user1's posts in org1 schema (2)
       assert loaded_user1.posts_count_current_tenant == 2
 
-      # Test: Load user2 with bypass aggregates from org2 context
+      # Test: Load user2 (who has no posts) with bypass aggregates from org2 context
       loaded_user2 =
         Ash.load!(
           user2,
@@ -241,10 +241,10 @@ defmodule AshSql.AggregateTest do
           tenant: "org_#{org2.id}"
         )
 
-      # Bypass should see posts from ALL tenant schemas (2 + 3 = 5)
-      assert loaded_user2.posts_count_all_tenants == 5
-      # Non-bypass should see only posts in org2 schema (3)
-      assert loaded_user2.posts_count_current_tenant == 3
+      # User2 has no posts, so both aggregates return 0
+      assert loaded_user2.posts_count_all_tenants == 0
+      # Non-bypass also sees 0 for user2
+      assert loaded_user2.posts_count_current_tenant == 0
     end
 
     test "bypass aggregates work with list and exists for context multitenancy" do
@@ -263,12 +263,13 @@ defmodule AshSql.AggregateTest do
         |> Ash.Changeset.for_create(:create, %{name: "User1", org_id: org1.id})
         |> Ash.create!()
 
-      user2 =
+      _user2 =
         User
         |> Ash.Changeset.for_create(:create, %{name: "User2", org_id: org2.id})
         |> Ash.create!()
 
       # Create posts with distinct names in different tenant schemas
+      # User1 has posts in BOTH tenants to demonstrate bypass vs non-bypass
       Post
       |> Ash.Changeset.for_create(:create, %{name: "Alpha", user_id: user1.id})
       |> Ash.create!(tenant: "org_#{org1.id}")
@@ -277,8 +278,9 @@ defmodule AshSql.AggregateTest do
       |> Ash.Changeset.for_create(:create, %{name: "Beta", user_id: user1.id})
       |> Ash.create!(tenant: "org_#{org1.id}")
 
+      # User1 also has a post in org2 - this demonstrates bypass aggregates
       Post
-      |> Ash.Changeset.for_create(:create, %{name: "Gamma", user_id: user2.id})
+      |> Ash.Changeset.for_create(:create, %{name: "Gamma", user_id: user1.id})
       |> Ash.create!(tenant: "org_#{org2.id}")
 
       # Test LIST aggregate with bypass
@@ -305,7 +307,7 @@ defmodule AshSql.AggregateTest do
       assert loaded_user1_exists.has_posts_all_tenants == true
       assert loaded_user1_exists.has_posts_current_tenant == true
 
-      # Create a user with no posts in current tenant
+      # Create a user with no posts at all
       user3 =
         User
         |> Ash.Changeset.for_create(:create, %{name: "User3", org_id: org1.id})
@@ -318,9 +320,9 @@ defmodule AshSql.AggregateTest do
           tenant: "org_#{org1.id}"
         )
 
-      # Bypass sees posts from other users in other tenants
-      assert loaded_user3.has_posts_all_tenants == true
-      # Non-bypass sees no posts for this user in current tenant
+      # Bypass still respects relationship filter - user3 has no posts in any tenant
+      assert loaded_user3.has_posts_all_tenants == false
+      # Non-bypass also sees no posts for this user in current tenant
       assert loaded_user3.has_posts_current_tenant == false
     end
 
