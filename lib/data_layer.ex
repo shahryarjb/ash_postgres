@@ -874,24 +874,31 @@ defmodule AshPostgres.DataLayer do
   defp load_bypass_aggregates(results, bypass_aggregates, resource, _original_query) do
     aggregates_by_relationship = Enum.group_by(bypass_aggregates, & &1.relationship_path)
 
+    relationship_metadata =
+      Map.new(aggregates_by_relationship, fn {relationship_path, _aggs} ->
+        [relationship_name | _rest] = relationship_path
+        relationship = Ash.Resource.Info.relationship(resource, relationship_name)
+        related_resource = relationship.destination
+        repo = AshPostgres.DataLayer.Info.repo(related_resource, :read)
+
+        tenants = if function_exported?(repo, :all_tenants, 0), do: repo.all_tenants(), else: []
+
+        {relationship_path, {relationship, related_resource, tenants, repo}}
+      end)
+
     updated_results =
       Enum.map(results, fn record ->
         Enum.reduce(aggregates_by_relationship, record, fn {relationship_path, aggs}, acc ->
-          [relationship_name | _rest] = relationship_path
-          relationship = Ash.Resource.Info.relationship(resource, relationship_name)
-          related_resource = relationship.destination
-          repo = AshPostgres.DataLayer.Info.repo(related_resource, :read)
-
-          tenants =
-            if function_exported?(repo, :all_tenants, 0), do: repo.all_tenants(), else: []
+          {relationship, related_resource, tenants, repo} =
+            relationship_metadata[relationship_path]
 
           aggregate_values =
-            Enum.reduce(aggs, %{}, fn agg, values ->
+            Map.new(aggs, fn agg ->
               result =
                 {acc, agg, relationship, related_resource, tenants, repo}
                 |> compute_bypass_aggregate_for_record()
 
-              Map.put(values, agg.name, result)
+              {agg.name, result}
             end)
 
           Map.merge(acc, aggregate_values)
