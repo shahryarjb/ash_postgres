@@ -897,7 +897,10 @@ defmodule AshPostgres.DataLayer do
           # Compute all aggregates for this relationship
           aggregate_values =
             Enum.reduce(aggs, %{}, fn agg, values ->
-              result = compute_bypass_aggregate_for_record(acc, agg, relationship, related_resource, tenants, repo)
+              result =
+                {acc, agg, relationship, related_resource, tenants, repo}
+                |> compute_bypass_aggregate_for_record()
+
               Map.put(values, agg.name, result)
             end)
 
@@ -910,7 +913,9 @@ defmodule AshPostgres.DataLayer do
   end
 
   # Compute a single bypass aggregate for a record across all tenants
-  defp compute_bypass_aggregate_for_record(record, aggregate, relationship, related_resource, tenants, repo) do
+  defp compute_bypass_aggregate_for_record(
+         {record, aggregate, relationship, related_resource, tenants, repo}
+       ) do
     # Get the source field value (e.g., user.id)
     source_value = Map.get(record, relationship.source_attribute)
     dest_attr = relationship.destination_attribute
