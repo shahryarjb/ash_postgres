@@ -362,17 +362,13 @@ defmodule AshSql.AggregateTest do
       # Link post1_org1 to post2_org1 (same tenant)
       post1_org1
       |> Ash.Changeset.new()
-      |> Ash.Changeset.manage_relationship(:linked_posts, [post2_org1],
-        type: :append_and_remove
-      )
+      |> Ash.Changeset.manage_relationship(:linked_posts, [post2_org1], type: :append_and_remove)
       |> Ash.update!(tenant: "org_#{org1.id}")
 
       # Link post1_org2 to both post2_org2 and post1_org1 (cross-tenant link)
       post1_org2
       |> Ash.Changeset.new()
-      |> Ash.Changeset.manage_relationship(:linked_posts, [post2_org2],
-        type: :append_and_remove
-      )
+      |> Ash.Changeset.manage_relationship(:linked_posts, [post2_org2], type: :append_and_remove)
       |> Ash.update!(tenant: "org_#{org2.id}")
 
       # Test aggregates on linked posts
@@ -469,6 +465,163 @@ defmodule AshSql.AggregateTest do
         )
 
       assert result_current.count_current_posts == 2
+    end
+
+    test "bypass aggregates work with multiple different relationships" do
+      # This test verifies that an Org can aggregate both posts AND users with bypass
+      # Testing multiple different relationships to ensure they all work correctly
+      org1 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "MultiRelOrg1"})
+        |> Ash.create!()
+
+      org2 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "MultiRelOrg2"})
+        |> Ash.create!()
+
+      # Create users in both orgs
+      user1_org1 =
+        User
+        |> Ash.Changeset.for_create(:create, %{name: "Alice", org_id: org1.id})
+        |> Ash.create!()
+
+      user2_org1 =
+        User
+        |> Ash.Changeset.for_create(:create, %{name: "Bob", org_id: org1.id})
+        |> Ash.create!()
+
+      user1_org2 =
+        User
+        |> Ash.Changeset.for_create(:create, %{name: "Charlie", org_id: org2.id})
+        |> Ash.create!()
+
+      # Create posts in both orgs (with org_id set for relationship filtering)
+      Post
+      |> Ash.Changeset.for_create(:create, %{
+        name: "Post 1 Org1",
+        user_id: user1_org1.id,
+        org_id: org1.id
+      })
+      |> Ash.create!(tenant: "org_#{org1.id}")
+
+      Post
+      |> Ash.Changeset.for_create(:create, %{
+        name: "Post 2 Org1",
+        user_id: user2_org1.id,
+        org_id: org1.id
+      })
+      |> Ash.create!(tenant: "org_#{org1.id}")
+
+      Post
+      |> Ash.Changeset.for_create(:create, %{
+        name: "Post 3 Org1",
+        user_id: user1_org1.id,
+        org_id: org1.id
+      })
+      |> Ash.create!(tenant: "org_#{org1.id}")
+
+      Post
+      |> Ash.Changeset.for_create(:create, %{
+        name: "Post 1 Org2",
+        user_id: user1_org2.id,
+        org_id: org2.id
+      })
+      |> Ash.create!(tenant: "org_#{org2.id}")
+
+      Post
+      |> Ash.Changeset.for_create(:create, %{
+        name: "Post 2 Org2",
+        user_id: user1_org2.id,
+        org_id: org2.id
+      })
+      |> Ash.create!(tenant: "org_#{org2.id}")
+
+      # Create CROSS-TENANT posts: posts in org2's schema that belong to org1
+      # This demonstrates the bypass aggregate properly
+      Post
+      |> Ash.Changeset.for_create(:create, %{
+        name: "Post 4 Org1 CrossTenant",
+        user_id: user1_org1.id,
+        org_id: org1.id
+      })
+      |> Ash.create!(tenant: "org_#{org2.id}")
+
+      Post
+      |> Ash.Changeset.for_create(:create, %{
+        name: "Post 5 Org1 CrossTenant",
+        user_id: user2_org1.id,
+        org_id: org1.id
+      })
+      |> Ash.create!(tenant: "org_#{org2.id}")
+
+      # Load org1 with aggregates for BOTH posts (context multitenancy) and users (attribute multitenancy)
+      loaded_org1 =
+        Ash.load!(
+          org1,
+          [
+            :posts_count_all_tenants,
+            :posts_count_current_tenant,
+            :users_count,
+            :post_names_all_tenants,
+            :post_names_current_tenant,
+            :user_names,
+            :has_posts_all_tenants
+          ],
+          tenant: "org_#{org1.id}"
+        )
+
+      # Test POSTS aggregates with bypass (context-based multitenancy)
+      # Bypass should see org1's posts across ALL tenants (3 in org1 + 2 in org2 = 5 total)
+      assert loaded_org1.posts_count_all_tenants == 5
+      # Non-bypass should see only org1 posts in CURRENT tenant (3)
+      assert loaded_org1.posts_count_current_tenant == 3
+
+      # Test POSTS list aggregates
+      assert Enum.sort(loaded_org1.post_names_all_tenants) == [
+               "Post 1 Org1",
+               "Post 2 Org1",
+               "Post 3 Org1",
+               "Post 4 Org1 CrossTenant",
+               "Post 5 Org1 CrossTenant"
+             ]
+
+      assert Enum.sort(loaded_org1.post_names_current_tenant) == [
+               "Post 1 Org1",
+               "Post 2 Org1",
+               "Post 3 Org1"
+             ]
+
+      # Test USERS aggregates (attribute-based multitenancy - no bypass needed)
+      # Users are in public.users table, filtered by org_id = org1.id
+      assert loaded_org1.users_count == 2
+      assert Enum.sort(loaded_org1.user_names) == ["Alice", "Bob"]
+
+      # Test EXISTS aggregates
+      assert loaded_org1.has_posts_all_tenants == true
+
+      # Load org2 and verify it sees different data
+      loaded_org2 =
+        Ash.load!(
+          org2,
+          [
+            :posts_count_all_tenants,
+            :posts_count_current_tenant,
+            :users_count
+          ],
+          tenant: "org_#{org2.id}"
+        )
+
+      # Org2 bypass counts its OWN posts across all tenants (respects relationship filter)
+      # Org2 has 2 posts with org_id = org2.id (both in org2's schema)
+      # Plus the 2 cross-tenant org1 posts are also in org2's schema, but they have org_id = org1.id
+      # So bypass still only counts 2 (respects the relationship WHERE org_id = org2.id)
+      assert loaded_org2.posts_count_all_tenants == 2
+      assert loaded_org2.users_count == 1
+      # Non-bypass should see only org2 data in current tenant
+      # Posts: 2 org2 posts + 2 cross-tenant org1 posts = 4 posts in org2's schema
+      # But filtered by org_id = org2.id = 2 posts
+      assert loaded_org2.posts_count_current_tenant == 2
     end
   end
 
