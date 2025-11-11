@@ -1222,9 +1222,7 @@ defmodule AshPostgres.DataLayer do
               )
 
             # Merge bypass results with normal lateral join results
-            final_result = Map.merge(base_result, bypass_result)
-
-            {:ok, final_result}
+            {:ok, Map.merge(base_result, bypass_result)}
         end
 
       {:error, error} ->
@@ -3835,8 +3833,6 @@ defmodule AshPostgres.DataLayer do
 
   @impl true
   def add_aggregates(query, aggregates, resource) do
-    # Split bypass and normal aggregates - only normal ones go into :load_aggregates
-    # This prevents AshSql from building bypass aggregates into LATERAL JOINs
     {bypass_aggregates, normal_aggregates} =
       Enum.split_with(aggregates, &is_bypass_aggregate?(&1, resource))
 
