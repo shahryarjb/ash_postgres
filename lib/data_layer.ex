@@ -872,29 +872,19 @@ defmodule AshPostgres.DataLayer do
 
   # Load bypass aggregates for each result record by querying across all tenants
   defp load_bypass_aggregates(results, bypass_aggregates, resource, _original_query) do
-    # Group aggregates by their relationship path
     aggregates_by_relationship = Enum.group_by(bypass_aggregates, & &1.relationship_path)
 
-    # For each result, compute all aggregates across all tenants
     updated_results =
       Enum.map(results, fn record ->
-        # For each relationship group, compute aggregates for this record
         Enum.reduce(aggregates_by_relationship, record, fn {relationship_path, aggs}, acc ->
-          # Get relationship info
           [relationship_name | _rest] = relationship_path
           relationship = Ash.Resource.Info.relationship(resource, relationship_name)
           related_resource = relationship.destination
           repo = AshPostgres.DataLayer.Info.repo(related_resource, :read)
 
-          # Get all tenants
           tenants =
-            if function_exported?(repo, :all_tenants, 0) do
-              repo.all_tenants()
-            else
-              []
-            end
+            if function_exported?(repo, :all_tenants, 0), do: repo.all_tenants(), else: []
 
-          # Compute all aggregates for this relationship
           aggregate_values =
             Enum.reduce(aggs, %{}, fn agg, values ->
               result =
@@ -904,7 +894,6 @@ defmodule AshPostgres.DataLayer do
               Map.put(values, agg.name, result)
             end)
 
-          # Merge aggregate values into the accumulator
           Map.merge(acc, aggregate_values)
         end)
       end)
@@ -916,26 +905,18 @@ defmodule AshPostgres.DataLayer do
   defp compute_bypass_aggregate_for_record(
          {record, aggregate, relationship, related_resource, tenants, repo}
        ) do
-    # Get the source field value (e.g., user.id)
     source_value = Map.get(record, relationship.source_attribute)
     dest_attr = relationship.destination_attribute
-
-    # Build base query for related resource
     table = AshPostgres.DataLayer.Info.table(related_resource)
 
-    # Determine what fields to select based on aggregate kind
     case aggregate.kind do
       kind when kind in [:count, :exists] ->
-        # For count/exists, just count rows across all tenants
         count = count_across_tenants(table, tenants, repo, {dest_attr, source_value})
-
         if kind == :count, do: count, else: count > 0
 
       kind when kind in [:list, :sum] ->
-        # For list/sum, need to select the specific field
         field_name = aggregate.field
 
-        # Query across all tenants and aggregate results
         all_values =
           Enum.flat_map(tenants, fn tenant ->
             value_query =
@@ -959,14 +940,12 @@ defmodule AshPostgres.DataLayer do
     end
   end
 
-  # Default value for an aggregate type
   defp default_aggregate_value(:count), do: 0
   defp default_aggregate_value(:exists), do: false
   defp default_aggregate_value(:list), do: []
   defp default_aggregate_value(:sum), do: nil
   defp default_aggregate_value(_), do: nil
 
-  # Count rows across all tenant schemas
   defp count_across_tenants(table, tenants, repo, where_params \\ nil) do
     Enum.reduce(tenants, 0, fn tenant, acc ->
       count_query =
@@ -989,7 +968,6 @@ defmodule AshPostgres.DataLayer do
     end)
   end
 
-  # Helper to check if an aggregate should bypass multitenancy
   defp is_bypass_aggregate?(agg, resource) do
     has_bypass = Map.get(agg, :multitenancy) == :bypass
 
