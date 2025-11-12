@@ -933,11 +933,7 @@ defmodule AshPostgres.DataLayer do
             repo.all(value_query) || []
           end)
 
-        if kind == :list do
-          all_values
-        else
-          all_values |> Enum.reject(&is_nil/1) |> Enum.sum()
-        end
+        if kind == :list, do: all_values, else: Enum.reject(all_values, &is_nil/1) |> Enum.sum()
 
       _ ->
         default_aggregate_value(aggregate.kind)
