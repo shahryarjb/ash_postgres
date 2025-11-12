@@ -948,10 +948,10 @@ defmodule AshPostgres.DataLayer do
 
         case kind do
           :list -> all_values
-          :sum -> compute_sum(all_values)
-          :max -> all_values |> Enum.reject(&is_nil/1) |> Enum.max(fn -> nil end)
-          :min -> all_values |> Enum.reject(&is_nil/1) |> Enum.min(fn -> nil end)
-          :avg -> compute_average(all_values)
+          :sum -> compute_sum(Enum.reject(all_values, &is_nil/1))
+          :max -> Enum.reject(all_values, &is_nil/1) |> Enum.max(fn -> nil end)
+          :min -> Enum.reject(all_values, &is_nil/1) |> Enum.min(fn -> nil end)
+          :avg -> compute_average(Enum.reject(all_values, &is_nil/1))
           :first -> all_values |> List.first()
         end
 
@@ -961,26 +961,10 @@ defmodule AshPostgres.DataLayer do
   end
 
   defp compute_sum([]), do: nil
-
-  defp compute_sum(values) do
-    non_nil_values = Enum.reject(values, &is_nil/1)
-
-    case non_nil_values do
-      [] -> nil
-      vals -> Enum.sum(vals)
-    end
-  end
+  defp compute_sum(values), do: Enum.sum(values)
 
   defp compute_average([]), do: nil
-
-  defp compute_average(values) do
-    non_nil_values = Enum.reject(values, &is_nil/1)
-
-    case non_nil_values do
-      [] -> nil
-      vals -> Enum.sum(vals) / length(vals)
-    end
-  end
+  defp compute_average(values), do: Enum.sum(values) / length(values)
 
   defp default_aggregate_value(:count), do: 0
   defp default_aggregate_value(:exists), do: false
