@@ -75,6 +75,56 @@ defmodule AshPostgres.MultitenancyTest.User do
     exists :has_posts_current_tenant, :posts do
       public?(true)
     end
+
+    # SUM aggregates
+    sum :total_score_all_tenants, :posts, :score do
+      public?(true)
+      multitenancy :bypass
+    end
+
+    sum :total_score_current_tenant, :posts, :score do
+      public?(true)
+    end
+
+    # AVG aggregates
+    avg :avg_score_all_tenants, :posts, :score do
+      public?(true)
+      multitenancy :bypass
+    end
+
+    avg :avg_score_current_tenant, :posts, :score do
+      public?(true)
+    end
+
+    # MAX aggregates
+    max :max_score_all_tenants, :posts, :score do
+      public?(true)
+      multitenancy :bypass
+    end
+
+    max :max_score_current_tenant, :posts, :score do
+      public?(true)
+    end
+
+    # MIN aggregates
+    min :min_score_all_tenants, :posts, :score do
+      public?(true)
+      multitenancy :bypass
+    end
+
+    min :min_score_current_tenant, :posts, :score do
+      public?(true)
+    end
+
+    # FIRST aggregates
+    first :first_post_name_all_tenants, :posts, :name do
+      public?(true)
+      multitenancy :bypass
+    end
+
+    first :first_post_name_current_tenant, :posts, :name do
+      public?(true)
+    end
   end
 
   def parse_tenant("org_" <> id), do: id

@@ -623,6 +623,234 @@ defmodule AshSql.AggregateTest do
       # But filtered by org_id = org2.id = 2 posts
       assert loaded_org2.posts_count_current_tenant == 2
     end
+
+    test "bypass aggregates work with sum, avg, max, min for context multitenancy" do
+      org1 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "Org1"})
+        |> Ash.create!()
+
+      org2 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "Org2"})
+        |> Ash.create!()
+
+      user1 =
+        User
+        |> Ash.Changeset.for_create(:create, %{name: "User1", org_id: org1.id})
+        |> Ash.create!()
+
+      # Create posts in org1 tenant with specific scores
+      Post
+      |> Ash.Changeset.for_create(:create, %{
+        name: "Post A",
+        score: 15,
+        rating: Decimal.new("3.5"),
+        user_id: user1.id
+      })
+      |> Ash.create!(tenant: "org_#{org1.id}")
+
+      Post
+      |> Ash.Changeset.for_create(:create, %{
+        name: "Post B",
+        score: 20,
+        rating: Decimal.new("4.0"),
+        user_id: user1.id
+      })
+      |> Ash.create!(tenant: "org_#{org1.id}")
+
+      # Create posts in org2 tenant with different scores (including a lower min)
+      Post
+      |> Ash.Changeset.for_create(:create, %{
+        name: "Post C",
+        score: 5,
+        rating: Decimal.new("4.5"),
+        user_id: user1.id
+      })
+      |> Ash.create!(tenant: "org_#{org2.id}")
+
+      Post
+      |> Ash.Changeset.for_create(:create, %{
+        name: "Post D",
+        score: 40,
+        rating: Decimal.new("5.0"),
+        user_id: user1.id
+      })
+      |> Ash.create!(tenant: "org_#{org2.id}")
+
+      # Load user1 with numeric aggregates from org1 context
+      loaded_user =
+        Ash.load!(
+          user1,
+          [
+            :total_score_all_tenants,
+            :total_score_current_tenant,
+            :avg_score_all_tenants,
+            :avg_score_current_tenant,
+            :max_score_all_tenants,
+            :max_score_current_tenant,
+            :min_score_all_tenants,
+            :min_score_current_tenant
+          ],
+          tenant: "org_#{org1.id}"
+        )
+
+      # SUM: Bypass sums across all tenants (15 + 20 + 5 + 40 = 80)
+      assert loaded_user.total_score_all_tenants == 80
+      # Non-bypass sums only org1 tenant (15 + 20 = 35)
+      assert loaded_user.total_score_current_tenant == 35
+
+      # AVG: Bypass averages across all tenants ((15 + 20 + 5 + 40) / 4 = 20.0)
+      assert loaded_user.avg_score_all_tenants == 20.0
+      # Non-bypass averages only org1 tenant ((15 + 20) / 2 = 17.5)
+      assert loaded_user.avg_score_current_tenant == 17.5
+
+      # MAX: Bypass finds max across all tenants (40)
+      assert loaded_user.max_score_all_tenants == 40
+      # Non-bypass finds max only in org1 tenant (20)
+      assert loaded_user.max_score_current_tenant == 20
+
+      # MIN: Bypass finds min across all tenants (5 from org2)
+      assert loaded_user.min_score_all_tenants == 5
+      # Non-bypass finds min only in org1 tenant (15)
+      assert loaded_user.min_score_current_tenant == 15
+    end
+
+    test "bypass aggregates work with first for context multitenancy" do
+      org1 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "Org1"})
+        |> Ash.create!()
+
+      org2 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "Org2"})
+        |> Ash.create!()
+
+      user1 =
+        User
+        |> Ash.Changeset.for_create(:create, %{name: "User1", org_id: org1.id})
+        |> Ash.create!()
+
+      # Create posts in org2 first (to test bypass finds across tenants)
+      Post
+      |> Ash.Changeset.for_create(:create, %{
+        name: "First Post",
+        score: 100,
+        user_id: user1.id
+      })
+      |> Ash.create!(tenant: "org_#{org2.id}")
+
+      # Create posts in org1 later
+      Post
+      |> Ash.Changeset.for_create(:create, %{
+        name: "Second Post",
+        score: 200,
+        user_id: user1.id
+      })
+      |> Ash.create!(tenant: "org_#{org1.id}")
+
+      # Load user1 with first aggregates from org1 context
+      loaded_user =
+        Ash.load!(
+          user1,
+          [:first_post_name_all_tenants, :first_post_name_current_tenant],
+          tenant: "org_#{org1.id}"
+        )
+
+      # Bypass should get first post across all tenants
+      # The first aggregate returns the first value it finds
+      assert loaded_user.first_post_name_all_tenants in ["First Post", "Second Post"]
+
+      # Non-bypass should get first post only from current tenant
+      assert loaded_user.first_post_name_current_tenant == "Second Post"
+    end
+
+    test "bypass aggregates return correct nil/empty values with no data" do
+      org1 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "Org1"})
+        |> Ash.create!()
+
+      user_no_posts =
+        User
+        |> Ash.Changeset.for_create(:create, %{name: "UserNoData", org_id: org1.id})
+        |> Ash.create!()
+
+      # Load user with no posts (both bypass and non-bypass aggregates)
+      loaded_user =
+        Ash.load!(
+          user_no_posts,
+          [
+            :total_score_all_tenants,
+            :total_score_current_tenant,
+            :avg_score_all_tenants,
+            :avg_score_current_tenant,
+            :max_score_all_tenants,
+            :max_score_current_tenant,
+            :min_score_all_tenants,
+            :min_score_current_tenant,
+            :first_post_name_all_tenants,
+            :first_post_name_current_tenant
+          ],
+          tenant: "org_#{org1.id}"
+        )
+
+      # Bypass aggregates (all tenants) should return nil when no data
+      assert loaded_user.total_score_all_tenants == nil
+      assert loaded_user.avg_score_all_tenants == nil
+      assert loaded_user.max_score_all_tenants == nil
+      assert loaded_user.min_score_all_tenants == nil
+      assert loaded_user.first_post_name_all_tenants == nil
+
+      # Non-bypass aggregates (current tenant) should also return nil when no data
+      assert loaded_user.total_score_current_tenant == nil
+      assert loaded_user.avg_score_current_tenant == nil
+      assert loaded_user.max_score_current_tenant == nil
+      assert loaded_user.min_score_current_tenant == nil
+      assert loaded_user.first_post_name_current_tenant == nil
+    end
+
+    test "bypass aggregates work with predefined aggregates for sum, max, min, avg" do
+      org1 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "Org1"})
+        |> Ash.create!()
+
+      org2 =
+        Org
+        |> Ash.Changeset.for_create(:create, %{name: "Org2"})
+        |> Ash.create!()
+
+      user1 =
+        User
+        |> Ash.Changeset.for_create(:create, %{name: "User1", org_id: org1.id})
+        |> Ash.create!()
+
+      # Create posts with scores in different tenants
+      Post
+      |> Ash.Changeset.for_create(:create, %{name: "P1", score: 15, user_id: user1.id})
+      |> Ash.create!(tenant: "org_#{org1.id}")
+
+      Post
+      |> Ash.Changeset.for_create(:create, %{name: "P2", score: 25, user_id: user1.id})
+      |> Ash.create!(tenant: "org_#{org2.id}")
+
+      # Test loading predefined bypass aggregates
+      loaded_user =
+        user1
+        |> Ash.load!([
+          :total_score_all_tenants,
+          :avg_score_all_tenants,
+          :max_score_all_tenants,
+          :min_score_all_tenants
+        ], tenant: "org_#{org1.id}")
+
+      assert loaded_user.total_score_all_tenants == 40
+      assert loaded_user.avg_score_all_tenants == 20.0
+      assert loaded_user.max_score_all_tenants == 25
+      assert loaded_user.min_score_all_tenants == 15
+    end
   end
 
   describe "join filters" do

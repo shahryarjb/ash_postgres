@@ -918,7 +918,7 @@ defmodule AshPostgres.DataLayer do
         count = count_across_tenants(related_resource, tenants, repo, {dest_attr, source_value})
         if kind == :count, do: count, else: count > 0
 
-      kind when kind in [:list, :sum] ->
+      kind when kind in [:list, :sum, :max, :min, :avg, :first] ->
         field_name = aggregate.field
 
         all_values =
@@ -933,10 +933,39 @@ defmodule AshPostgres.DataLayer do
             repo.all(value_query) || []
           end)
 
-        if kind == :list, do: all_values, else: Enum.reject(all_values, &is_nil/1) |> Enum.sum()
+        case kind do
+          :list -> all_values
+          :sum -> compute_sum(all_values)
+          :max -> all_values |> Enum.reject(&is_nil/1) |> Enum.max(fn -> nil end)
+          :min -> all_values |> Enum.reject(&is_nil/1) |> Enum.min(fn -> nil end)
+          :avg -> compute_average(all_values)
+          :first -> all_values |> List.first()
+        end
 
       _ ->
         default_aggregate_value(aggregate.kind)
+    end
+  end
+
+  defp compute_sum([]), do: nil
+
+  defp compute_sum(values) do
+    non_nil_values = Enum.reject(values, &is_nil/1)
+
+    case non_nil_values do
+      [] -> nil
+      vals -> Enum.sum(vals)
+    end
+  end
+
+  defp compute_average([]), do: nil
+
+  defp compute_average(values) do
+    non_nil_values = Enum.reject(values, &is_nil/1)
+
+    case non_nil_values do
+      [] -> nil
+      vals -> Enum.sum(vals) / length(vals)
     end
   end
 
@@ -944,6 +973,10 @@ defmodule AshPostgres.DataLayer do
   defp default_aggregate_value(:exists), do: false
   defp default_aggregate_value(:list), do: []
   defp default_aggregate_value(:sum), do: nil
+  defp default_aggregate_value(:avg), do: nil
+  defp default_aggregate_value(:max), do: nil
+  defp default_aggregate_value(:min), do: nil
+  defp default_aggregate_value(:first), do: nil
   defp default_aggregate_value(_), do: nil
 
   defp count_across_tenants(resource, tenants, repo, where_params \\ nil) do
@@ -1065,12 +1098,49 @@ defmodule AshPostgres.DataLayer do
 
   # Compute a single bypass aggregate value directly (for Ash.aggregate/3)
   defp compute_direct_bypass_aggregate(aggregate, resource, tenants, repo) do
+    # Check if this is a relationship aggregate
+    case aggregate.relationship_path do
+      [] ->
+        # Direct aggregate on the resource itself
+        compute_direct_resource_aggregate(aggregate, resource, tenants, repo)
+
+      _path ->
+        # Relationship aggregate - not supported for direct aggregates
+        # These should be loaded via the normal load_bypass_aggregates path
+        default_aggregate_value(aggregate.kind)
+    end
+  end
+
+  defp compute_direct_resource_aggregate(aggregate, resource, tenants, repo) do
     case aggregate.kind do
       :count ->
         count_across_tenants(resource, tenants, repo)
 
       :exists ->
         count_across_tenants(resource, tenants, repo) > 0
+
+      kind when kind in [:sum, :max, :min, :avg, :first, :list] ->
+        field_name = aggregate.field
+
+        all_values =
+          Enum.flat_map(tenants, fn tenant ->
+            value_query =
+              from(t in resource,
+                prefix: ^to_string(tenant),
+                select: field(t, ^field_name)
+              )
+
+            repo.all(value_query) || []
+          end)
+
+        case kind do
+          :list -> all_values
+          :sum -> compute_sum(all_values)
+          :max -> all_values |> Enum.reject(&is_nil/1) |> Enum.max(fn -> nil end)
+          :min -> all_values |> Enum.reject(&is_nil/1) |> Enum.min(fn -> nil end)
+          :avg -> compute_average(all_values)
+          :first -> all_values |> List.first()
+        end
 
       _ ->
         default_aggregate_value(aggregate.kind)

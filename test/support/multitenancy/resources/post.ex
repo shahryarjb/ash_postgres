@@ -23,6 +23,8 @@ defmodule AshPostgres.MultitenancyTest.Post do
   attributes do
     uuid_primary_key(:id, writable?: true)
     attribute(:name, :string, public?: true)
+    attribute(:score, :integer, public?: true)
+    attribute(:rating, :decimal, public?: true)
   end
 
   actions do
