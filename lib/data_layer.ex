@@ -855,11 +855,7 @@ defmodule AshPostgres.DataLayer do
         # Load bypass aggregates if any
         bypass_aggregates = query.__ash_bindings__[:bypass_aggregates] || []
 
-        if Enum.empty?(bypass_aggregates) do
-          {:ok, results}
-        else
-          load_bypass_aggregates(results, bypass_aggregates, resource, query)
-        end
+        load_bypass_aggregates(results, bypass_aggregates, resource, query)
       end)
     end
   rescue
@@ -871,6 +867,8 @@ defmodule AshPostgres.DataLayer do
   defp no_table?(_), do: false
 
   # Load bypass aggregates for each result record by querying across all tenants
+  defp load_bypass_aggregates(results, [], _resource, _original_query), do: {:ok, results}
+
   defp load_bypass_aggregates(results, bypass_aggregates, resource, _original_query) do
     aggregates_by_relationship = Enum.group_by(bypass_aggregates, & &1.relationship_path)
 
@@ -1038,13 +1036,8 @@ defmodule AshPostgres.DataLayer do
         )
       end
 
-    bypass_result =
-      if Enum.empty?(bypass_aggregates) do
-        {:ok, %{}}
-      else
-        # For bypass aggregates, compute manually by querying across all tenants
-        compute_bypass_aggregates_directly(bypass_aggregates, resource)
-      end
+    # For bypass aggregates, compute manually by querying across all tenants
+    bypass_result = compute_bypass_aggregates_directly(bypass_aggregates, resource)
 
     with {:ok, normal_data} <- normal_result,
          {:ok, bypass_data} <- bypass_result do
@@ -1053,6 +1046,8 @@ defmodule AshPostgres.DataLayer do
   end
 
   # Compute bypass aggregates directly for Ash.aggregate/3 calls
+  defp compute_bypass_aggregates_directly([], _resource), do: {:ok, %{}}
+
   defp compute_bypass_aggregates_directly(aggregates, resource) do
     repo = AshPostgres.DataLayer.Info.repo(resource, :read)
 
