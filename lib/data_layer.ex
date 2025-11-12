@@ -912,10 +912,16 @@ defmodule AshPostgres.DataLayer do
        ) do
     source_value = Map.get(record, relationship.source_attribute)
     dest_attr = relationship.destination_attribute
+    where_clause = {dest_attr, source_value}
 
+    compute_aggregate_across_tenants(aggregate, related_resource, tenants, repo, where_clause)
+  end
+
+  # Core helper to compute aggregates across all tenants with optional WHERE clause
+  defp compute_aggregate_across_tenants(aggregate, resource, tenants, repo, where_clause) do
     case aggregate.kind do
       kind when kind in [:count, :exists] ->
-        count = count_across_tenants(related_resource, tenants, repo, {dest_attr, source_value})
+        count = count_across_tenants(resource, tenants, repo, where_clause)
         if kind == :count, do: count, else: count > 0
 
       kind when kind in [:list, :sum, :max, :min, :avg, :first] ->
@@ -923,12 +929,19 @@ defmodule AshPostgres.DataLayer do
 
         all_values =
           Enum.flat_map(tenants, fn tenant ->
+            base_query = from(t in resource, prefix: ^to_string(tenant))
+
             value_query =
-              from(t in related_resource,
-                prefix: ^to_string(tenant),
-                where: field(t, ^dest_attr) == ^source_value,
-                select: field(t, ^field_name)
-              )
+              case where_clause do
+                {dest_attr, source_value} ->
+                  from(t in base_query,
+                    where: field(t, ^dest_attr) == ^source_value,
+                    select: field(t, ^field_name)
+                  )
+
+                nil ->
+                  from(t in base_query, select: field(t, ^field_name))
+              end
 
             repo.all(value_query) || []
           end)
@@ -979,7 +992,7 @@ defmodule AshPostgres.DataLayer do
   defp default_aggregate_value(:first), do: nil
   defp default_aggregate_value(_), do: nil
 
-  defp count_across_tenants(resource, tenants, repo, where_params \\ nil) do
+  defp count_across_tenants(resource, tenants, repo, where_params) do
     Enum.reduce(tenants, 0, fn tenant, acc ->
       count_query =
         case where_params do
@@ -1112,39 +1125,7 @@ defmodule AshPostgres.DataLayer do
   end
 
   defp compute_direct_resource_aggregate(aggregate, resource, tenants, repo) do
-    case aggregate.kind do
-      :count ->
-        count_across_tenants(resource, tenants, repo)
-
-      :exists ->
-        count_across_tenants(resource, tenants, repo) > 0
-
-      kind when kind in [:sum, :max, :min, :avg, :first, :list] ->
-        field_name = aggregate.field
-
-        all_values =
-          Enum.flat_map(tenants, fn tenant ->
-            value_query =
-              from(t in resource,
-                prefix: ^to_string(tenant),
-                select: field(t, ^field_name)
-              )
-
-            repo.all(value_query) || []
-          end)
-
-        case kind do
-          :list -> all_values
-          :sum -> compute_sum(all_values)
-          :max -> all_values |> Enum.reject(&is_nil/1) |> Enum.max(fn -> nil end)
-          :min -> all_values |> Enum.reject(&is_nil/1) |> Enum.min(fn -> nil end)
-          :avg -> compute_average(all_values)
-          :first -> all_values |> List.first()
-        end
-
-      _ ->
-        default_aggregate_value(aggregate.kind)
-    end
+    compute_aggregate_across_tenants(aggregate, resource, tenants, repo, nil)
   end
 
   @impl true
