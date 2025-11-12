@@ -969,11 +969,6 @@ defmodule AshPostgres.DataLayer do
   defp default_aggregate_value(:count), do: 0
   defp default_aggregate_value(:exists), do: false
   defp default_aggregate_value(:list), do: []
-  defp default_aggregate_value(:sum), do: nil
-  defp default_aggregate_value(:avg), do: nil
-  defp default_aggregate_value(:max), do: nil
-  defp default_aggregate_value(:min), do: nil
-  defp default_aggregate_value(:first), do: nil
   defp default_aggregate_value(_), do: nil
 
   defp count_across_tenants(resource, tenants, repo, where_params) do
@@ -1099,6 +1094,7 @@ defmodule AshPostgres.DataLayer do
       [] ->
         # Direct aggregate on the resource itself
         compute_aggregate_across_tenants(aggregate, resource, tenants, repo, nil)
+
       _path ->
         # Relationship aggregate - not supported for direct aggregates
         # These should be loaded via the normal load_bypass_aggregates path
