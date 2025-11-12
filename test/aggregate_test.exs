@@ -190,7 +190,6 @@ defmodule AshSql.AggregateTest do
     end
 
     test "aggregates with bypass can count across all tenants in context multitenancy" do
-      # Create two separate orgs (tenants)
       [org1, org2] =
         for i <- 1..2 do
           Org
@@ -198,7 +197,6 @@ defmodule AshSql.AggregateTest do
           |> Ash.create!()
         end
 
-      # Create users in each org (attribute multitenancy)
       [user1, user2] =
         for {org, i} <- Enum.with_index([org1, org2], 1) do
           User
@@ -206,14 +204,12 @@ defmodule AshSql.AggregateTest do
           |> Ash.create!()
         end
 
-      # Create posts for user1 in org1 schema (context multitenancy)
       for i <- 1..2 do
         Post
         |> Ash.Changeset.for_create(:create, %{name: "Post #{i} in Org1", user_id: user1.id})
         |> Ash.create!(tenant: "org_#{org1.id}")
       end
 
-      # Create posts for user1 in org2 schema to demonstrate bypass across tenants
       for i <- 1..3 do
         Post
         |> Ash.Changeset.for_create(:create, %{name: "Post #{i} in Org2", user_id: user1.id})
@@ -337,7 +333,6 @@ defmodule AshSql.AggregateTest do
         |> Ash.Changeset.for_create(:create, %{name: "Org2"})
         |> Ash.create!()
 
-      # Create posts in org1
       post1_org1 =
         Post
         |> Ash.Changeset.for_create(:create, %{name: "Post 1 Org1"})
@@ -348,7 +343,6 @@ defmodule AshSql.AggregateTest do
         |> Ash.Changeset.for_create(:create, %{name: "Post 2 Org1"})
         |> Ash.create!(tenant: "org_#{org1.id}")
 
-      # Create posts in org2
       post1_org2 =
         Post
         |> Ash.Changeset.for_create(:create, %{name: "Post 1 Org2"})
@@ -468,8 +462,6 @@ defmodule AshSql.AggregateTest do
     end
 
     test "bypass aggregates work with multiple different relationships" do
-      # This test verifies that an Org can aggregate both posts AND users with bypass
-      # Testing multiple different relationships to ensure they all work correctly
       org1 =
         Org
         |> Ash.Changeset.for_create(:create, %{name: "MultiRelOrg1"})
@@ -480,7 +472,6 @@ defmodule AshSql.AggregateTest do
         |> Ash.Changeset.for_create(:create, %{name: "MultiRelOrg2"})
         |> Ash.create!()
 
-      # Create users in both orgs
       user1_org1 =
         User
         |> Ash.Changeset.for_create(:create, %{name: "Alice", org_id: org1.id})
@@ -640,7 +631,6 @@ defmodule AshSql.AggregateTest do
         |> Ash.Changeset.for_create(:create, %{name: "User1", org_id: org1.id})
         |> Ash.create!()
 
-      # Create posts in org1 tenant with specific scores
       Post
       |> Ash.Changeset.for_create(:create, %{
         name: "Post A",
@@ -732,7 +722,6 @@ defmodule AshSql.AggregateTest do
         |> Ash.Changeset.for_create(:create, %{name: "User1", org_id: org1.id})
         |> Ash.create!()
 
-      # Create posts in org2 first (to test bypass finds across tenants)
       Post
       |> Ash.Changeset.for_create(:create, %{
         name: "First Post",
@@ -741,7 +730,6 @@ defmodule AshSql.AggregateTest do
       })
       |> Ash.create!(tenant: "org_#{org2.id}")
 
-      # Create posts in org1 later
       Post
       |> Ash.Changeset.for_create(:create, %{
         name: "Second Post",
@@ -827,7 +815,6 @@ defmodule AshSql.AggregateTest do
         |> Ash.Changeset.for_create(:create, %{name: "User1", org_id: org1.id})
         |> Ash.create!()
 
-      # Create posts with scores in different tenants
       Post
       |> Ash.Changeset.for_create(:create, %{name: "P1", score: 15, user_id: user1.id})
       |> Ash.create!(tenant: "org_#{org1.id}")
@@ -839,12 +826,15 @@ defmodule AshSql.AggregateTest do
       # Test loading predefined bypass aggregates
       loaded_user =
         user1
-        |> Ash.load!([
-          :total_score_all_tenants,
-          :avg_score_all_tenants,
-          :max_score_all_tenants,
-          :min_score_all_tenants
-        ], tenant: "org_#{org1.id}")
+        |> Ash.load!(
+          [
+            :total_score_all_tenants,
+            :avg_score_all_tenants,
+            :max_score_all_tenants,
+            :min_score_all_tenants
+          ],
+          tenant: "org_#{org1.id}"
+        )
 
       assert loaded_user.total_score_all_tenants == 40
       assert loaded_user.avg_score_all_tenants == 20.0
