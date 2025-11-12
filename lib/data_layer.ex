@@ -914,11 +914,10 @@ defmodule AshPostgres.DataLayer do
        ) do
     source_value = Map.get(record, relationship.source_attribute)
     dest_attr = relationship.destination_attribute
-    table = AshPostgres.DataLayer.Info.table(related_resource)
 
     case aggregate.kind do
       kind when kind in [:count, :exists] ->
-        count = count_across_tenants(table, tenants, repo, {dest_attr, source_value})
+        count = count_across_tenants(related_resource, tenants, repo, {dest_attr, source_value})
         if kind == :count, do: count, else: count > 0
 
       kind when kind in [:list, :sum] ->
@@ -927,9 +926,9 @@ defmodule AshPostgres.DataLayer do
         all_values =
           Enum.flat_map(tenants, fn tenant ->
             value_query =
-              from(t in table,
+              from(t in related_resource,
                 prefix: ^to_string(tenant),
-                where: field(t, ^dest_attr) == type(^source_value, :binary_id),
+                where: field(t, ^dest_attr) == ^source_value,
                 select: field(t, ^field_name)
               )
 
@@ -953,22 +952,19 @@ defmodule AshPostgres.DataLayer do
   defp default_aggregate_value(:sum), do: nil
   defp default_aggregate_value(_), do: nil
 
-  defp count_across_tenants(table, tenants, repo, where_params \\ nil) do
+  defp count_across_tenants(resource, tenants, repo, where_params \\ nil) do
     Enum.reduce(tenants, 0, fn tenant, acc ->
       count_query =
         case where_params do
           {dest_attr, source_value} ->
-            from(t in table,
+            from(t in resource,
               prefix: ^to_string(tenant),
-              where: field(t, ^dest_attr) == type(^source_value, :binary_id),
+              where: field(t, ^dest_attr) == ^source_value,
               select: count()
             )
 
           nil ->
-            from(t in table,
-              prefix: ^to_string(tenant),
-              select: count()
-            )
+            from(t in resource, prefix: ^to_string(tenant), select: count())
         end
 
       acc + (repo.one(count_query) || 0)
@@ -1059,7 +1055,6 @@ defmodule AshPostgres.DataLayer do
   # Compute bypass aggregates directly for Ash.aggregate/3 calls
   defp compute_bypass_aggregates_directly(aggregates, resource) do
     repo = AshPostgres.DataLayer.Info.repo(resource, :read)
-    table = AshPostgres.DataLayer.Info.table(resource)
 
     all_tenants =
       if function_exported?(repo, :all_tenants, 0) do
@@ -1070,7 +1065,7 @@ defmodule AshPostgres.DataLayer do
 
     result =
       Enum.reduce(aggregates, %{}, fn agg, acc ->
-        value = compute_direct_bypass_aggregate(agg, table, all_tenants, repo)
+        value = compute_direct_bypass_aggregate(agg, resource, all_tenants, repo)
         Map.put(acc, agg.name, value)
       end)
 
@@ -1078,13 +1073,13 @@ defmodule AshPostgres.DataLayer do
   end
 
   # Compute a single bypass aggregate value directly (for Ash.aggregate/3)
-  defp compute_direct_bypass_aggregate(aggregate, table, tenants, repo) do
+  defp compute_direct_bypass_aggregate(aggregate, resource, tenants, repo) do
     case aggregate.kind do
       :count ->
-        count_across_tenants(table, tenants, repo)
+        count_across_tenants(resource, tenants, repo)
 
       :exists ->
-        count_across_tenants(table, tenants, repo) > 0
+        count_across_tenants(resource, tenants, repo) > 0
 
       _ ->
         default_aggregate_value(aggregate.kind)
