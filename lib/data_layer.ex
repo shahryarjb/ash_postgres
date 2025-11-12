@@ -1095,21 +1095,15 @@ defmodule AshPostgres.DataLayer do
 
   # Compute a single bypass aggregate value directly (for Ash.aggregate/3)
   defp compute_direct_bypass_aggregate(aggregate, resource, tenants, repo) do
-    # Check if this is a relationship aggregate
     case aggregate.relationship_path do
       [] ->
         # Direct aggregate on the resource itself
-        compute_direct_resource_aggregate(aggregate, resource, tenants, repo)
-
+        compute_aggregate_across_tenants(aggregate, resource, tenants, repo, nil)
       _path ->
         # Relationship aggregate - not supported for direct aggregates
         # These should be loaded via the normal load_bypass_aggregates path
         default_aggregate_value(aggregate.kind)
     end
-  end
-
-  defp compute_direct_resource_aggregate(aggregate, resource, tenants, repo) do
-    compute_aggregate_across_tenants(aggregate, resource, tenants, repo, nil)
   end
 
   @impl true
